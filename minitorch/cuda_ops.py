@@ -419,8 +419,22 @@ def _mm_practice(out: Storage, a: Storage, b: Storage, size: int) -> None:
 
     """
     BLOCK_DIM = 32
-    # TODO: Implement for Task 3.3.
-    raise NotImplementedError("Need to implement for Task 3.3")
+    cache_a = cuda.shared.array((BLOCK_DIM, BLOCK_DIM), numba.float64)
+    cache_b = cuda.shared.array((BLOCK_DIM, BLOCK_DIM), numba.float64)
+
+    tx = cuda.threadIdx.x
+    ty = cuda.threadIdx.y
+
+    if tx < size and ty < size:
+        cache_a[ty, tx] = a[ty * size + tx]
+        cache_b[ty, tx] = b[ty * size + tx]
+    cuda.syncthreads()
+
+    if tx < size and ty < size:
+        accum = 0
+        for k in range(size):
+            accum += cache_a[ty, k] * cache_b[k, tx]
+        out[ty * size + tx] = accum
 
 
 jit_mm_practice = jit(_mm_practice)
@@ -468,6 +482,7 @@ def _tensor_matrix_multiply(
     """
     a_batch_stride = a_strides[0] if a_shape[0] > 1 else 0
     b_batch_stride = b_strides[0] if b_shape[0] > 1 else 0
+    o_batch_stride = out_strides[0]
     # Batch dimension - fixed
     batch = cuda.blockIdx.z
 
@@ -483,13 +498,67 @@ def _tensor_matrix_multiply(
     pi = cuda.threadIdx.x
     pj = cuda.threadIdx.y
 
+    # The local block indices.
+    bi = cuda.blockIdx.x
+    bj = cuda.blockIdx.y
+
     # Code Plan:
     # 1) Move across shared dimension by block dim.
     #    a) Copy into shared memory for a matrix.
     #    b) Copy into shared memory for b matrix
     #    c) Compute the dot produce for position c[i, j]
-    # TODO: Implement for Task 3.4.
-    raise NotImplementedError("Need to implement for Task 3.4")
+    
+    # a shape A x M x K, b shape B x K x N
+    M = a_shape[-2]
+    K = b_shape[-2]
+    N = b_shape[-1]
+
+    # Calculate the offset on each Tensor
+    o_batch_offset = batch * o_batch_stride
+    a_batch_offset = batch * a_batch_stride
+    b_batch_offset = batch * b_batch_stride
+
+    accum = 0
+
+    # Loop over tiles of the shared dimension K
+    tile_count = (K + BLOCK_DIM - 1) // BLOCK_DIM # ceiling(K/BLOCK_DIM)
+    for tile_idx in range(tile_count):
+
+        # Load elements of A into shared memory
+        a_row_idx = bi*BLOCK_DIM + pi
+        a_col_idx = tile_idx*BLOCK_DIM + pj
+        if a_row_idx < a_shape[-2] and a_col_idx < a_shape[-1]:
+            a_ordinal = a_batch_offset + a_row_idx * a_strides[-2] + a_col_idx * a_strides[-1]
+            a_shared[pi, pj] = a_storage[a_ordinal]
+        else:
+            a_shared[pi, pj] = 0
+
+        # Load elements of B into shared memory
+        b_row_idx = tile_idx*BLOCK_DIM + pi
+        b_col_idx = bj*BLOCK_DIM + pj
+        if b_row_idx < b_shape[-2] and b_col_idx < b_shape[-1]:
+            b_ordinal = b_batch_offset + b_row_idx * b_strides[-2] + b_col_idx * b_strides[-1]
+            b_shared[pi, pj] = b_storage[b_ordinal]
+        else:
+            b_shared[pi, pj] = 0
+
+        # Synchronize threads to ensure shared memory is loaded
+        cuda.syncthreads()
+
+        # Compute partial dot product
+        for pk in range(BLOCK_DIM):
+            if tile_idx * BLOCK_DIM + pk < K:
+                accum += a_shared[pi, pk] * b_shared[pk, pj]
+            else:
+                break
+
+        # Synchronize before next tile loading
+        cuda.syncthreads()
+
+    # Write the result to global memory
+    if i < M and j < N:
+        o_ordinal = o_batch_offset + i * out_strides[-2] + j * out_strides[-1]
+        out[o_ordinal] = accum
 
 
 tensor_matrix_multiply = jit(_tensor_matrix_multiply)
