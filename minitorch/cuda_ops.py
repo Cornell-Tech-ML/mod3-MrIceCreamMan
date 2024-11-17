@@ -5,6 +5,7 @@ from typing import Callable, Optional, TypeVar, Any
 
 import numba
 from numba import cuda
+import numpy as np
 from numba.cuda import jit as _jit
 from .tensor import Tensor
 from .tensor_data import (
@@ -29,11 +30,13 @@ FakeCUDAKernel = Any
 Fn = TypeVar("Fn")
 
 
-def device_jit(fn: Fn, **kwargs) -> Fn:
+def device_jit(fn: Fn, **kwargs: Any) -> Fn:
+    """Device Jit Function"""
     return _jit(device=True, **kwargs)(fn)  # type: ignore
 
 
-def jit(fn, **kwargs) -> FakeCUDAKernel:
+def jit(fn: Fn, **kwargs: Any) -> FakeCUDAKernel:
+    """Jit Function"""
     return _jit(**kwargs)(fn)  # type: ignore
 
 
@@ -67,6 +70,7 @@ class CudaOps(TensorOps):
 
     @staticmethod
     def zip(fn: Callable[[float, float], float]) -> Callable[[Tensor, Tensor], Tensor]:
+        """Zip function"""
         cufn: Callable[[float, float], float] = device_jit(fn)
         f = tensor_zip(cufn)
 
@@ -86,6 +90,7 @@ class CudaOps(TensorOps):
     def reduce(
         fn: Callable[[float, float], float], start: float = 0.0
     ) -> Callable[[Tensor, int], Tensor]:
+        """Reduce function"""
         cufn: Callable[[float, float], float] = device_jit(fn)
         f = tensor_reduce(cufn)
 
@@ -106,6 +111,7 @@ class CudaOps(TensorOps):
 
     @staticmethod
     def matrix_multiply(a: Tensor, b: Tensor) -> Tensor:
+        """Matrix multiply function"""
         # Make these always be a 3 dimensional multiply
         both_2d = 0
         if len(a.shape) == 2:
@@ -142,6 +148,15 @@ class CudaOps(TensorOps):
 
 # Implement
 
+@cuda.jit(device=True)
+def array_equal(arr1, arr2):
+    if len(arr1) != len(arr2):
+        return False
+    for i in range(len(arr1)):
+        if arr1[i] != arr2[i]:
+            return False
+    return True
+
 
 def tensor_map(
     fn: Callable[[float], float],
@@ -170,11 +185,24 @@ def tensor_map(
         in_shape: Shape,
         in_strides: Strides,
     ) -> None:
+        i = cuda.blockIdx.x * cuda.blockDim.x + cuda.threadIdx.x
+        if i >= out_size:
+            return
+
+        stride_aligned = array_equal(out_shape, in_shape) and array_equal(out_strides, in_strides)
+
+        # If stride-aligned, avoid indexing calculations
+        if stride_aligned:
+            out[i] = fn(in_storage[i])
+            return
+
         out_index = cuda.local.array(MAX_DIMS, numba.int32)
         in_index = cuda.local.array(MAX_DIMS, numba.int32)
-        i = cuda.blockIdx.x * cuda.blockDim.x + cuda.threadIdx.x
-        # TODO: Implement for Task 3.3.
-        raise NotImplementedError("Need to implement for Task 3.3")
+
+        to_index(i, out_shape, out_index)
+        broadcast_index(out_index, out_shape, in_shape, in_index)
+        in_ordinal = index_to_position(in_index, in_strides)
+        out[i] = fn(in_storage[in_ordinal])
 
     return cuda.jit()(_map)  # type: ignore
 
@@ -211,13 +239,35 @@ def tensor_zip(
         b_shape: Shape,
         b_strides: Strides,
     ) -> None:
+        i = cuda.blockIdx.x * cuda.blockDim.x + cuda.threadIdx.x
+        if i >= out_size:
+            return
+
+        stride_aligned = (
+            array_equal(out_shape, a_shape)
+            and array_equal(out_shape, b_shape)
+            and array_equal(out_strides, a_strides)
+            and array_equal(out_strides, b_strides)
+        )
+
+        # If stride-aligned, avoid indexing calculations
+        if stride_aligned:
+            out[i] = fn(a_storage[i], b_storage[i])
+            return
+
         out_index = cuda.local.array(MAX_DIMS, numba.int32)
         a_index = cuda.local.array(MAX_DIMS, numba.int32)
         b_index = cuda.local.array(MAX_DIMS, numba.int32)
-        i = cuda.blockIdx.x * cuda.blockDim.x + cuda.threadIdx.x
 
-        # TODO: Implement for Task 3.3.
-        raise NotImplementedError("Need to implement for Task 3.3")
+        to_index(i, out_shape, out_index)
+
+        broadcast_index(out_index, out_shape, a_shape, a_index)
+        a_ordinal = index_to_position(a_index, a_strides)
+
+        broadcast_index(out_index, out_shape, b_shape, b_index)
+        b_ordinal = index_to_position(b_index, b_strides)
+
+        out[i] = fn(a_storage[a_ordinal], b_storage[b_ordinal])
 
     return cuda.jit()(_zip)  # type: ignore
 
@@ -249,8 +299,21 @@ def _sum_practice(out: Storage, a: Storage, size: int) -> None:
     i = cuda.blockIdx.x * cuda.blockDim.x + cuda.threadIdx.x
     pos = cuda.threadIdx.x
 
-    # TODO: Implement for Task 3.3.
-    raise NotImplementedError("Need to implement for Task 3.3")
+    if i < size:
+        cache[pos] = a[i]
+    else:
+        cache[pos] = 0
+    cuda.syncthreads()
+
+    stride = 1
+    while stride < BLOCK_DIM:
+        if pos % (2 * stride) == 0:
+            cache[pos] += cache[pos + stride]
+            cuda.syncthreads()
+        stride *= 2
+
+    if pos == 0:
+        out[cuda.blockIdx.x] = cache[0]
 
 
 jit_sum_practice = cuda.jit()(_sum_practice)
@@ -300,8 +363,26 @@ def tensor_reduce(
         out_pos = cuda.blockIdx.x
         pos = cuda.threadIdx.x
 
-        # TODO: Implement for Task 3.3.
-        raise NotImplementedError("Need to implement for Task 3.3")
+        cache[pos] = reduce_value
+        
+        if out_pos < out_size:
+            to_index(out_pos, out_shape, out_index)
+            out_index[reduce_dim] = pos
+            
+            if pos < a_shape[reduce_dim]:
+                a_ordinal = index_to_position(out_index, a_strides)
+                cache[pos] = a_storage[a_ordinal]
+                cuda.syncthreads()
+            
+                stride = 1
+                while stride < BLOCK_DIM:
+                    if pos % (2 * stride) == 0:
+                        cache[pos] = fn(cache[pos], cache[pos + stride])
+                        cuda.syncthreads()
+                    stride *= 2
+
+            if pos == 0:
+                out[out_pos] = cache[0]
 
     return jit(_reduce)  # type: ignore
 

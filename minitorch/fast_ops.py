@@ -296,13 +296,11 @@ def tensor_reduce(
 
         for i in prange(total_size):
             to_index(i, out_shape, out_index_array[i])
-            a_ordinal_start = index_to_position(out_index_array[i], a_strides)
-
-            current_ordinal = a_ordinal_start + 0
+            a_ordinal = index_to_position(out_index_array[i], a_strides)
             accum = out[i]
             for _ in range(reduce_size):
-                accum = fn(accum, a_storage[current_ordinal])
-                current_ordinal += reduce_step
+                accum = fn(accum, a_storage[a_ordinal])
+                a_ordinal += reduce_step
             out[i] = accum
 
     return njit(_reduce, parallel=True)  # type: ignore
