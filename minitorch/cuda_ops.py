@@ -5,7 +5,6 @@ from typing import Callable, Optional, TypeVar, Any
 
 import numba
 from numba import cuda
-import numpy as np
 from numba.cuda import jit as _jit
 from .tensor import Tensor
 from .tensor_data import (
@@ -148,8 +147,10 @@ class CudaOps(TensorOps):
 
 # Implement
 
+
 @cuda.jit(device=True)
-def array_equal(arr1, arr2):
+def array_equal(arr1: Shape, arr2: Shape) -> bool:
+    """Check if two arrays are equal"""
     if len(arr1) != len(arr2):
         return False
     for i in range(len(arr1)):
@@ -189,7 +190,9 @@ def tensor_map(
         if i >= out_size:
             return
 
-        stride_aligned = array_equal(out_shape, in_shape) and array_equal(out_strides, in_strides)
+        stride_aligned = array_equal(out_shape, in_shape) and array_equal(
+            out_strides, in_strides
+        )
 
         # If stride-aligned, avoid indexing calculations
         if stride_aligned:
@@ -273,9 +276,9 @@ def tensor_zip(
 
 
 def _sum_practice(out: Storage, a: Storage, size: int) -> None:
-    """This is a practice sum kernel to prepare for reduce.
+    """A practice sum kernel to prepare for reduce.
 
-    Given an array of length $n$ and out of size $n // \text{blockDIM}$
+    Given an array of length $n$ and out of size $n // text{blockDIM}$
     it should sum up each blockDim values into an out cell.
 
     $[a_1, a_2, ..., a_{100}]$
@@ -320,6 +323,7 @@ jit_sum_practice = cuda.jit()(_sum_practice)
 
 
 def sum_practice(a: Tensor) -> TensorData:
+    """Sum practice question"""
     (size,) = a.shape
     threadsperblock = THREADS_PER_BLOCK
     blockspergrid = (size // THREADS_PER_BLOCK) + 1
@@ -364,16 +368,16 @@ def tensor_reduce(
         pos = cuda.threadIdx.x
 
         cache[pos] = reduce_value
-        
+
         if out_pos < out_size:
             to_index(out_pos, out_shape, out_index)
             out_index[reduce_dim] = pos
-            
+
             if pos < a_shape[reduce_dim]:
                 a_ordinal = index_to_position(out_index, a_strides)
                 cache[pos] = a_storage[a_ordinal]
                 cuda.syncthreads()
-            
+
                 stride = 1
                 while stride < BLOCK_DIM:
                     if pos % (2 * stride) == 0:
@@ -388,7 +392,7 @@ def tensor_reduce(
 
 
 def _mm_practice(out: Storage, a: Storage, b: Storage, size: int) -> None:
-    """This is a practice square MM kernel to prepare for matmul.
+    """A practice square MM kernel to prepare for matmul.
 
     Given a storage `out` and two storage `a` and `b`. Where we know
     both are shape [size, size] with strides [size, 1].
@@ -441,6 +445,7 @@ jit_mm_practice = jit(_mm_practice)
 
 
 def mm_practice(a: Tensor, b: Tensor) -> TensorData:
+    """Matrix Multiply practice"""
     (size, _) = a.shape
     threadsperblock = (THREADS_PER_BLOCK, THREADS_PER_BLOCK)
     blockspergrid = 1
@@ -507,7 +512,7 @@ def _tensor_matrix_multiply(
     #    a) Copy into shared memory for a matrix.
     #    b) Copy into shared memory for b matrix
     #    c) Compute the dot produce for position c[i, j]
-    
+
     # a shape A x M x K, b shape B x K x N
     M = a_shape[-2]
     K = b_shape[-2]
@@ -521,23 +526,26 @@ def _tensor_matrix_multiply(
     accum = 0
 
     # Loop over tiles of the shared dimension K
-    tile_count = (K + BLOCK_DIM - 1) // BLOCK_DIM # ceiling(K/BLOCK_DIM)
+    tile_count = (K + BLOCK_DIM - 1) // BLOCK_DIM  # ceiling(K/BLOCK_DIM)
     for tile_idx in range(tile_count):
-
         # Load elements of A into shared memory
-        a_row_idx = bi*BLOCK_DIM + pi
-        a_col_idx = tile_idx*BLOCK_DIM + pj
+        a_row_idx = bi * BLOCK_DIM + pi
+        a_col_idx = tile_idx * BLOCK_DIM + pj
         if a_row_idx < a_shape[-2] and a_col_idx < a_shape[-1]:
-            a_ordinal = a_batch_offset + a_row_idx * a_strides[-2] + a_col_idx * a_strides[-1]
+            a_ordinal = (
+                a_batch_offset + a_row_idx * a_strides[-2] + a_col_idx * a_strides[-1]
+            )
             a_shared[pi, pj] = a_storage[a_ordinal]
         else:
             a_shared[pi, pj] = 0
 
         # Load elements of B into shared memory
-        b_row_idx = tile_idx*BLOCK_DIM + pi
-        b_col_idx = bj*BLOCK_DIM + pj
+        b_row_idx = tile_idx * BLOCK_DIM + pi
+        b_col_idx = bj * BLOCK_DIM + pj
         if b_row_idx < b_shape[-2] and b_col_idx < b_shape[-1]:
-            b_ordinal = b_batch_offset + b_row_idx * b_strides[-2] + b_col_idx * b_strides[-1]
+            b_ordinal = (
+                b_batch_offset + b_row_idx * b_strides[-2] + b_col_idx * b_strides[-1]
+            )
             b_shared[pi, pj] = b_storage[b_ordinal]
         else:
             b_shared[pi, pj] = 0

@@ -246,11 +246,13 @@ class Permute(Function):
 class Sum(Function):
     @staticmethod
     def forward(ctx: Context, a: Tensor, dim: Tensor) -> Tensor:
+        """Forward pass for sum function"""
         ctx.save_for_backward(a.shape, dim)
         return a.f.add_reduce(a, int(dim.item()))
 
     @staticmethod
     def backward(ctx: Context, grad_output: Tensor) -> Tuple[Tensor, float]:
+        """Backward pass for sum function"""
         a_shape, dim = ctx.saved_values
         return grad_output, 0.0
 

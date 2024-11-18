@@ -16,7 +16,7 @@ from .tensor_data import (
 
 if TYPE_CHECKING:
     from .tensor import Tensor
-    from .tensor_data import Shape, Storage, Strides
+    from .tensor_data import Index, Shape, Storage, Strides
 
 
 class MapProto(Protocol):
@@ -243,7 +243,7 @@ class SimpleOps(TensorOps):
 # Implementations.
 
 
-def tensor_map(fn: Callable[[float], float]) -> Any:
+def tensor_map(fn: Callable[[float], float]) -> Callable:
     """Low-level implementation of tensor map between
     tensors with *possibly different strides*.
 
@@ -277,8 +277,8 @@ def tensor_map(fn: Callable[[float], float]) -> Any:
         in_shape: Shape,
         in_strides: Strides,
     ) -> None:
-        out_index: Index = np.zeros(MAX_DIMS, np.int16)
-        in_index: Index = np.zeros(MAX_DIMS, np.int16)
+        out_index: Index = np.zeros(MAX_DIMS, np.int32)
+        in_index: Index = np.zeros(MAX_DIMS, np.int32)
         for i in range(len(out)):
             to_index(i, out_shape, out_index)
             broadcast_index(out_index, out_shape, in_shape, in_index)
@@ -289,7 +289,7 @@ def tensor_map(fn: Callable[[float], float]) -> Any:
     return _map
 
 
-def tensor_zip(fn: Callable[[float, float], float]) -> Any:
+def tensor_zip(fn: Callable[[float, float], float]) -> Callable:
     """Low-level implementation of tensor zip between
     tensors with *possibly different strides*.
 
@@ -341,7 +341,7 @@ def tensor_zip(fn: Callable[[float, float], float]) -> Any:
     return _zip
 
 
-def tensor_reduce(fn: Callable[[float, float], float]) -> Any:
+def tensor_reduce(fn: Callable[[float, float], float]) -> Callable:
     """Low-level implementation of tensor reduce.
 
     * `out_shape` will be the same as `a_shape`
