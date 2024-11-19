@@ -3,24 +3,28 @@ import random
 import numba
 
 import minitorch
+from time import time
+
+from minitorch.tensor import Tensor
 
 datasets = minitorch.datasets
 FastTensorBackend = minitorch.TensorBackend(minitorch.FastOps)
+GPUBackend = minitorch.TensorBackend(minitorch.FastOps)
 if numba.cuda.is_available():
     GPUBackend = minitorch.TensorBackend(minitorch.CudaOps)
 
 
-def default_log_fn(epoch, total_loss, correct, losses):
-    print("Epoch ", epoch, " loss ", total_loss, "correct", correct)
+def default_log_fn(epoch, total_loss, correct, losses, time_diff):
+    print("Epoch ", epoch, " loss ", total_loss, "correct", correct, "time per epoch", time_diff)
 
 
-def RParam(*shape, backend):
+def RParam(*shape, backend: minitorch.TensorBackend):
     r = minitorch.rand(shape, backend=backend) - 0.5
     return minitorch.Parameter(r)
 
 
 class Network(minitorch.Module):
-    def __init__(self, hidden, backend):
+    def __init__(self, hidden: int, backend: minitorch.TensorBackend):
         super().__init__()
 
         # Submodules
@@ -28,13 +32,15 @@ class Network(minitorch.Module):
         self.layer2 = Linear(hidden, hidden, backend)
         self.layer3 = Linear(hidden, 1, backend)
 
-    def forward(self, x):
-        # TODO: Implement for Task 3.5.
-        raise NotImplementedError("Need to implement for Task 3.5")
+    def forward(self, x: Tensor):
+        l1_result = self.layer1.forward(x).relu()
+        l2_result = self.layer2.forward(l1_result).relu()
+        l3_result = self.layer3.forward(l2_result).sigmoid()
+        return l3_result
 
 
 class Linear(minitorch.Module):
-    def __init__(self, in_size, out_size, backend):
+    def __init__(self, in_size: int, out_size: int, backend: minitorch.TensorBackend):
         super().__init__()
         self.weights = RParam(in_size, out_size, backend=backend)
         s = minitorch.zeros((out_size,), backend=backend)
@@ -42,13 +48,13 @@ class Linear(minitorch.Module):
         self.bias = minitorch.Parameter(s)
         self.out_size = out_size
 
-    def forward(self, x):
-        # TODO: Implement for Task 3.5.
-        raise NotImplementedError("Need to implement for Task 3.5")
+    def forward(self, x: Tensor):
+        mat_mul_prod = x @ self.weights.value
+        return mat_mul_prod + self.bias.value
 
 
 class FastTrain:
-    def __init__(self, hidden_layers, backend=FastTensorBackend):
+    def __init__(self, hidden_layers: int, backend: minitorch.TensorBackend =FastTensorBackend):
         self.hidden_layers = hidden_layers
         self.model = Network(hidden_layers, backend)
         self.backend = backend
@@ -59,13 +65,14 @@ class FastTrain:
     def run_many(self, X):
         return self.model.forward(minitorch.tensor(X, backend=self.backend))
 
-    def train(self, data, learning_rate, max_epochs=500, log_fn=default_log_fn):
+    def train(self, data, learning_rate:float, max_epochs:int=500, log_fn=default_log_fn):
         self.model = Network(self.hidden_layers, self.backend)
         optim = minitorch.SGD(self.model.parameters(), learning_rate)
         BATCH = 10
         losses = []
 
         for epoch in range(max_epochs):
+            start_time = time()
             total_loss = 0.0
             c = list(zip(data.X, data.y))
             random.shuffle(c)
@@ -95,7 +102,8 @@ class FastTrain:
                 out = self.model.forward(X).view(y.shape[0])
                 y2 = minitorch.tensor(data.y)
                 correct = int(((out.detach() > 0.5) == y2).sum()[0])
-                log_fn(epoch, total_loss, correct, losses)
+                time_diff = time() - start_time
+                log_fn(epoch, total_loss, correct, losses, time_diff)
 
 
 if __name__ == "__main__":
@@ -116,7 +124,7 @@ if __name__ == "__main__":
     if args.DATASET == "xor":
         data = minitorch.datasets["Xor"](PTS)
     elif args.DATASET == "simple":
-        data = minitorch.datasets["Simple"].simple(PTS)
+        data = minitorch.datasets["Simple"](PTS)
     elif args.DATASET == "split":
         data = minitorch.datasets["Split"](PTS)
 
